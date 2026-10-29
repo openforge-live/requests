@@ -2,9 +2,11 @@ import copy
 import filecmp
 import os
 import tarfile
+import tempfile
 import zipfile
 from collections import deque
 from io import BytesIO
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -371,6 +373,40 @@ class TestExtractZippedPaths:
     def test_invalid_unc_path(self):
         path = r"\\localhost\invalid\location"
         assert extract_zipped_paths(path) == path
+
+    def test_zipped_paths_do_not_reuse_existing_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        existing = tmp_path / "member.txt"
+        existing.write_bytes(b"unrelated existing content")
+        archive = tmp_path / "archive.zip"
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("nested/member.txt", b"archive content")
+
+        extracted = Path(extract_zipped_paths(str(archive / "nested" / "member.txt")))
+
+        assert extracted.parent == tmp_path
+        assert extracted != existing
+        assert extracted.read_bytes() == b"archive content"
+        assert existing.read_bytes() == b"unrelated existing content"
+        assert extracted.suffix == ".txt"
+
+    def test_zipped_paths_keep_same_basename_members_separate(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        extracted = []
+        for name in ("first", "second"):
+            archive = tmp_path / f"{name}.zip"
+            with zipfile.ZipFile(archive, "w") as zipped:
+                zipped.writestr("nested/member.txt", name.encode())
+            path = Path(extract_zipped_paths(str(archive / "nested" / "member.txt")))
+            assert path.parent == tmp_path
+            extracted.append(path)
+
+        assert extracted[0] != extracted[1]
+        assert extracted[0].read_bytes() == b"first"
+        assert extracted[1].read_bytes() == b"second"
+        assert all(path.suffix == ".txt" for path in extracted)
 
 
 class TestContentEncodingDetection:
